@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Maßeinheiten Trainer</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 18px; line-height: 1.35; }
+    .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+    .card { border: 1px solid #ddd; border-radius: 10px; padding: 14px; max-width: 860px; }
+    label { font-weight: 700; }
+    input[type="number"] { padding: 8px; width: 180px; }
+    button { padding: 8px 12px; cursor: pointer; }
+    .ok { color: #0a7a0a; font-weight: 700; }
+    .bad { color: #b00020; font-weight: 700; }
+    .muted { color: #666; }
+    .task { font-size: 18px; font-weight: 700; }
+    .small { font-size: 12px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 760px){ .grid { grid-template-columns: 1fr; } }
+    .pill { display:inline-block; padding: 3px 8px; border-radius: 999px; border:1px solid #ddd; margin-right:6px; }
+  </style>
+</head>
+<body>
+  <h2>Maßeinheiten und Umrechnungen, Trainer</h2>
+
+  <div class="card">
+    <div class="row">
+      <label>Übungstyp</label>
+      <select id="mode">
+        <option value="convert">Umrechnen</option>
+        <option value="calc">Praxisaufgabe</option>
+      </select>
+
+      <label>Thema</label>
+      <select id="topic">
+        <option value="mix">Mix</option>
+        <option value="length">Länge</option>
+        <option value="mass">Masse</option>
+        <option value="volume">Volumen</option>
+        <option value="area">Fläche</option>
+        <option value="temp">Temperatur</option>
+        <option value="speed">Geschwindigkeit</option>
+      </select>
+
+      <label>Schwierigkeit</label>
+      <select id="level">
+        <option value="1">Leicht</option>
+        <option value="2" selected>Mittel</option>
+        <option value="3">Schwer</option>
+      </select>
+
+      <button id="newBtn">Neue Aufgabe</button>
+    </div>
+
+    <hr>
+
+    <div class="grid">
+      <div>
+        <div class="muted small">Aufgabe</div>
+        <div id="task" class="task">Klicke auf „Neue Aufgabe“.</div>
+        <div id="context" class="muted"></div>
+
+        <div style="margin-top:12px" class="row">
+          <label for="answer">Dein Ergebnis</label>
+          <input id="answer" type="number" step="any" placeholder="Zahl eingeben" />
+          <span id="unitHint" class="pill muted"></span>
+          <button id="checkBtn">Prüfen</button>
+        </div>
+
+        <div id="feedback" style="margin-top:10px"></div>
+        <div id="solution" class="muted small" style="margin-top:6px"></div>
+      </div>
+
+      <div>
+        <div class="muted small">Punkte</div>
+        <div class="row">
+          <div><span class="pill">Richtig: <b id="right">0</b></span></div>
+          <div><span class="pill">Falsch: <b id="wrong">0</b></span></div>
+          <div><span class="pill">Serie: <b id="streak">0</b></span></div>
+        </div>
+
+        <hr>
+
+        <div class="muted small">Tipp</div>
+        <div id="tip" class="muted">
+          Arbeite mit Faktoren. Beispiel: 1 m = 100 cm, also mal 100.
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const el = (id) => document.getElementById(id);
+
+  const modeEl = el("mode");
+  const topicEl = el("topic");
+  const levelEl = el("level");
+  const taskEl = el("task");
+  const contextEl = el("context");
+  const answerEl = el("answer");
+  const unitHintEl = el("unitHint");
+  const feedbackEl = el("feedback");
+  const solutionEl = el("solution");
+  const tipEl = el("tip");
+
+  const rightEl = el("right");
+  const wrongEl = el("wrong");
+  const streakEl = el("streak");
+
+  let state = {
+    current: null,
+    right: 0,
+    wrong: 0,
+    streak: 0
+  };
+
+  function rndInt(min, max){ return Math.floor(Math.random() * (max - min + 1)) + min; }
+  function pick(arr){ return arr[Math.floor(Math.random() * arr.length)]; }
+
+  function roundNice(x){
+    // vermeidet lange Floats
+    return Math.round((x + Number.EPSILON) * 1000000) / 1000000;
+  }
+
+  function approxEqual(user, sol, tol){
+    return Math.abs(user - sol) <= tol;
+  }
+
+  // Umrechnungstabellen (Basis-Einheit)
+  const conv = {
+    length: { base: "m", units: [
+      { u:"mm", f:0.001 }, { u:"cm", f:0.01 }, { u:"m", f:1 }, { u:"km", f:1000 }
+    ]},
+    mass: { base: "g", units: [
+      { u:"mg", f:0.001 }, { u:"g", f:1 }, { u:"kg", f:1000 }, { u:"t", f:1000000 }
+    ]},
+    volume: { base: "l", units: [
+      { u:"ml", f:0.001 }, { u:"l", f:1 }, { u:"m³", f:1000 } // 1 m³ = 1000 l
+    ]},
+    area: { base: "m²", units: [
+      { u:"cm²", f:0.0001 }, { u:"m²", f:1 }, { u:"ha", f:10000 }, { u:"km²", f:1000000 }
+    ]},
+    speed: { base: "m/s", units: [
+      { u:"m/s", f:1 }, { u:"km/h", f: (1000/3600) } // 1 km/h = 0.277777... m/s
+    ]}
+  };
+
+  function tempConvert(value, from, to){
+    // nur °C, K, °F
+    let c;
+    if(from === "°C") c = value;
+    if(from === "K") c = value - 273.15;
+    if(from === "°F") c = (value - 32) * (5/9);
+
+    if(to === "°C") return c;
+    if(to === "K") return c + 273.15;
+    if(to === "°F") return c * (9/5) + 32;
+  }
+
+  const tips = {
+    length: [
+      "1 m = 100 cm, 1 cm = 10 mm, 1 km = 1000 m.",
+      "Bei mm → m teilst du durch 1000. Bei m → mm multiplizierst du mit 1000."
+    ],
+    mass: [
+      "1 kg = 1000 g, 1 g = 1000 mg, 1 t = 1000 kg.",
+      "Achte auf die Nullenzahl. kg → g mal 1000."
+    ],
+    volume: [
+      "1 l = 1000 ml. 1 m³ = 1000 l.",
+      "ml → l teilst du durch 1000."
+    ],
+    area: [
+      "Fläche wächst quadratisch. 1 m² = 10.000 cm².",
+      "1 ha = 10.000 m²."
+    ],
+    temp: [
+      "K = °C + 273,15. °F = °C × 1,8 + 32.",
+      "Bei Temperatur gibt es Offsets. Nicht nur Faktoren."
+    ],
+    speed: [
+      "m/s = km/h ÷ 3,6. km/h = m/s × 3,6.",
+      "3,6 kommt von 3600 s pro Stunde und 1000 m pro km."
+    ],
+    mix: [
+      "Schreibe die Einheiten hin. Dann rechnest du sauber.",
+      "Prüfe am Ende: Ist das Ergebnis plausibel?"
+    ]
+  };
+
+  function makeConvertTask(topic, level){
+    if(topic === "mix") topic = pick(["length","mass","volume","area","temp","speed"]);
+
+    if(topic === "temp"){
+      const units = ["°C","K","°F"];
+      let from = pick(units), to = pick(units.filter(x => x !== from));
+      let value;
+      if(level == 1) value = rndInt(0, 40);
+      if(level == 2) value = rndInt(-10, 100);
+      if(level == 3) value = rndInt(-40, 250);
+
+      const sol = roundNice(tempConvert(value, from, to));
+      const tol = 0.05; // Temperatur-Toleranz
+
+      return {
+        type:"convert",
+        topic:"temp",
+        text: `Rechne um: ${value} ${from} in ${to}`,
+        unitHint: to,
+        solution: sol,
+        tolerance: tol,
+        explain: `Rechenweg: erst in °C umrechnen, dann in ${to}.`
+      };
+    }
+
+    const cfg = conv[topic];
+    const units = cfg.units;
+
+    let from = pick(units);
+    let to = pick(units.filter(x => x.u !== from.u));
+
+    let value;
+    if(level == 1) value = rndInt(1, 200);
+    if(level == 2) value = rndInt(5, 5000);
+    if(level == 3) value = rndInt(10, 200000);
+
+    // hübsche Werte für km/h, km, t usw.
+    if(topic === "speed" && from.u === "km/h" && level >= 2) value = rndInt(10, 130);
+    if(topic === "length" && from.u === "km" && level >= 2) value = rndInt(1, 120);
+    if(topic === "mass" && from.u === "t") value = rndInt(1, 12);
+
+    // Umrechnung: value * from.f -> base, dann / to.f
+    const baseVal = value * from.f;
+    const sol = roundNice(baseVal / to.f);
+
+    // Toleranz abhängig von Größe
+    const tol = Math.max(0.0001, Math.abs(sol) * 0.002); // 0,2 %
+
+    return {
+      type:"convert",
+      topic,
+      text: `Rechne um: ${value} ${from.u} in ${to.u}`,
+      unitHint: to.u,
+      solution: sol,
+      tolerance: tol,
+      explain: `Rechenweg: in Basis umrechnen und dann in Ziel.`
+    };
+  }
+
+  function makePracticalTask(topic, level){
+    if(topic === "mix") topic = pick(["length","mass","volume","area","temp","speed"]);
+
+    // Praxisaufgaben, Ergebnis ist ein Zahlenwert in einer Ziel-Einheit
+    if(topic === "length"){
+      // Kabel / Brett / Strecke
+      const contexts = [
+        () => {
+          const a = rndInt(25, 180); // cm
+          const b = rndInt(30, 250); // cm
+          const totalCm = a + b;
+          return {
+            text: `Du verbindest zwei Kabelstücke: ${a} cm und ${b} cm. Wie lang ist das zusammen in m?`,
+            unitHint: "m",
+            solution: roundNice(totalCm / 100),
+            tol: 0.001,
+            tip: "cm → m teilst du durch 100."
+          };
+        },
+        () => {
+          const km = (level==1)? rndInt(1,8) : rndInt(5,60);
+          const m = (level==1)? rndInt(0,900) : rndInt(0,999);
+          const totalM = km*1000 + m;
+          return {
+            text: `Du gehst ${km} km und danach ${m} m. Wie viele Meter sind das insgesamt?`,
+            unitHint: "m",
+            solution: totalM,
+            tol: 0.1,
+            tip: "km → m mal 1000, dann addieren."
+          };
+        }
+      ];
+      return pack(pick(contexts)(), "length");
+    }
+
+    if(topic === "mass"){
+      const contexts = [
+        () => {
+          const a = rndInt(250, 900); // g
+          const b = rndInt(1, 6); // kg
+          const totalG = a + b*1000;
+          return {
+            text: `Du packst ${b} kg Reis und ${a} g Nüsse ein. Wie viel ist das zusammen in g?`,
+            unitHint: "g",
+            solution: totalG,
+            tol: 0.1,
+            tip: "kg → g mal 1000."
+          };
+        },
+        () => {
+          const kg = rndInt(2, 25);
+          const portionG = (level==1)? 150 : rndInt(80, 250);
+          const totalG = kg*1000;
+          const portions = roundNice(totalG / portionG);
+          return {
+            text: `Du hast ${kg} kg Material. Pro Teil brauchst du ${portionG} g. Wie viele Teile bekommst du? (Dezimalzahl ok)`,
+            unitHint: "Teile",
+            solution: portions,
+            tol: Math.max(0.02, portions*0.01),
+            tip: "Erst alles in g, dann teilen."
+          };
+        }
+      ];
+      return pack(pick(contexts)(), "mass");
+    }
+
+    if(topic === "volume"){
+      const contexts = [
+        () => {
+          const bottles = rndInt(2, 10);
+          const eachMl = (level==1)? rndInt(250, 750) : rndInt(150, 1500);
+          const totalL = roundNice((bottles * eachMl) / 1000);
+          return {
+            text: `Du füllst ${bottles} Flaschen mit je ${eachMl} ml ab. Wie viele Liter sind das insgesamt?`,
+            unitHint: "l",
+            solution: totalL,
+            tol: 0.001,
+            tip: "ml → l teilst du durch 1000."
+          };
+        },
+        () => {
+          const l = rndInt(3, 40);
+          const ml = rndInt(0, 900);
+          const totalMl = l*1000 + ml;
+          return {
+            text: `Du mischst ${l} l und ${ml} ml. Wie viele ml sind das?`,
+            unitHint: "ml",
+            solution: totalMl,
+            tol: 0.1,
+            tip: "l → ml mal 1000, dann addieren."
+          };
+        }
+      ];
+      return pack(pick(contexts)(), "volume");
+    }
+
+    if(topic === "area"){
+      const contexts = [
+        () => {
+          const w = (level==1)? rndInt(2, 10) : rndInt(4, 25);
+          const h = (level==1)? rndInt(2, 10) : rndInt(4, 25);
+          const area = w*h;
+          return {
+            text: `Du planst einen rechteckigen Bereich: ${w} m mal ${h} m. Wie groß ist die Fläche in m²?`,
+            unitHint: "m²",
+            solution: area,
+            tol: 0.01,
+            tip: "Fläche Rechteck: Breite mal Höhe."
+          };
+        },
+        () => {
+          const m2 = rndInt(500, 25000);
+          const ha = roundNice(m2 / 10000);
+          return {
+            text: `Ein Grundstück hat ${m2} m². Wie viele Hektar sind das?`,
+            unitHint: "ha",
+            solution: ha,
+            tol: 0.001,
+            tip: "1 ha = 10.000 m²."
+          };
+        }
+      ];
+      return pack(pick(contexts)(), "area");
+    }
+
+    if(topic === "temp"){
+      const contexts = [
+        () => {
+          const c = (level==1)? rndInt(15, 30) : rndInt(-20, 120);
+          const k = roundNice(c + 273.15);
+          return {
+            text: `Ein Sensor zeigt ${c} °C. Wie viel ist das in Kelvin?`,
+            unitHint: "K",
+            solution: k,
+            tol: 0.05,
+            tip: "K = °C + 273,15."
+          };
+        },
+        () => {
+          const f = (level==1)? rndInt(32, 95) : rndInt(-10, 250);
+          const c = roundNice((f - 32) * 5/9);
+          return {
+            text: `Ein Gerät zeigt ${f} °F. Wie viel ist das in °C?`,
+            unitHint: "°C",
+            solution: c,
+            tol: 0.1,
+            tip: "°C = (°F - 32) × 5/9."
+          };
+        }
+      ];
+      return pack(pick(contexts)(), "temp");
+    }
+
+    if(topic === "speed"){
+      const contexts = [
+        () => {
+          const kmh = (level==1)? rndInt(10, 80) : rndInt(30, 160);
+          const ms = roundNice(kmh / 3.6);
+          return {
+            text: `Du misst ${kmh} km/h. Wie viel ist das in m/s?`,
+            unitHint: "m/s",
+            solution: ms,
+            tol: Math.max(0.02, ms*0.01),
+            tip: "m/s = km/h ÷ 3,6."
+          };
+        },
+        () => {
+          const ms = (level==1)? rndInt(2, 15) : rndInt(5, 40);
+          const kmh = roundNice(ms * 3.6);
+          return {
+            text: `Ein Förderband läuft ${ms} m/s. Wie viel ist das in km/h?`,
+            unitHint: "km/h",
+            solution: kmh,
+            tol: Math.max(0.02, kmh*0.01),
+            tip: "km/h = m/s × 3,6."
+          };
+        }
+      ];
+      return pack(pick(contexts)(), "speed");
+    }
+
+    // fallback
+    return makeConvertTask("mix", level);
+
+    function pack(obj, topic){
+      return {
+        type:"calc",
+        topic,
+        text: obj.text,
+        unitHint: obj.unitHint,
+        solution: obj.solution,
+        tolerance: obj.tol,
+        explain: obj.tip
+      };
+    }
+  }
+
+  function newTask(){
+    const mode = modeEl.value;
+    const topic = topicEl.value;
+    const level = Number(levelEl.value);
+
+    feedbackEl.textContent = "";
+    solutionEl.textContent = "";
+    answerEl.value = "";
+    answerEl.focus();
+
+    const t = (mode === "convert")
+      ? makeConvertTask(topic, level)
+      : makePracticalTask(topic, level);
+
+    state.current = t;
+
+    taskEl.textContent = t.text;
+    contextEl.textContent = `Thema: ${labelTopic(t.topic)}, Modus: ${mode === "convert" ? "Umrechnen" : "Praxisaufgabe"}`;
+    unitHintEl.textContent = t.unitHint ? `Einheit: ${t.unitHint}` : "";
+    tipEl.textContent = pick(tips[topic] || tips.mix);
+  }
+
+  function labelTopic(t){
+    return ({
+      length:"Länge",
+      mass:"Masse",
+      volume:"Volumen",
+      area:"Fläche",
+      temp:"Temperatur",
+      speed:"Geschwindigkeit",
+      mix:"Mix"
+    })[t] || t;
+  }
+
+  function check(){
+    const t = state.current;
+    if(!t){
+      feedbackEl.innerHTML = "<span class='bad'>Noch keine Aufgabe geladen.</span>";
+      return;
+    }
+    const user = Number(answerEl.value);
+    if(!Number.isFinite(user)){
+      feedbackEl.innerHTML = "<span class='bad'>Bitte eine Zahl eingeben.</span>";
+      return;
+    }
+
+    const ok = approxEqual(user, t.solution, t.tolerance);
+
+    if(ok){
+      state.right += 1;
+      state.streak += 1;
+      feedbackEl.innerHTML = `<span class="ok">Richtig.</span>`;
+      solutionEl.textContent = `Lösung: ${t.solution} ${t.unitHint || ""}`.trim();
+    } else {
+      state.wrong += 1;
+      state.streak = 0;
+      feedbackEl.innerHTML = `<span class="bad">Falsch.</span>`;
+      solutionEl.textContent = `Lösung: ${t.solution} ${t.unitHint || ""}. Hinweis: ${t.explain}`;
+    }
+
+    rightEl.textContent = state.right;
+    wrongEl.textContent = state.wrong;
+    streakEl.textContent = state.streak;
+  }
+
+  el("newBtn").addEventListener("click", newTask);
+  el("checkBtn").addEventListener("click", check);
+  answerEl.addEventListener("keydown", (e) => {
+    if(e.key === "Enter") check();
+  });
+
+})();
+</script>
+</body>
+</html>
